@@ -1,0 +1,787 @@
+import { useState, useEffect } from "react";
+import { useRoute, useLocation } from "wouter";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { format } from "date-fns";
+import { 
+  MapPin, 
+  CalendarIcon, 
+  Share2, 
+  Edit, 
+  Trash2, 
+  ShoppingCart, 
+  DollarSign, 
+  Briefcase, 
+  MessageSquare,
+  EyeOff,
+  UserMinus,
+  Users,
+  Shield,
+  RotateCcw,
+  Map,
+  CalendarIcon as Calendar
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { 
+  DropdownMenu, 
+  DropdownMenuContent, 
+  DropdownMenuItem, 
+  DropdownMenuTrigger 
+} from "@/components/ui/dropdown-menu";
+import { 
+  AlertDialog, 
+  AlertDialogAction, 
+  AlertDialogCancel, 
+  AlertDialogContent, 
+  AlertDialogDescription, 
+  AlertDialogFooter, 
+  AlertDialogHeader, 
+  AlertDialogTitle 
+} from "@/components/ui/alert-dialog";
+import { 
+  Dialog, 
+  DialogContent, 
+  DialogFooter, 
+  DialogHeader, 
+  DialogTitle 
+} from "@/components/ui/dialog";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import { 
+  Tooltip, 
+  TooltipContent, 
+  TooltipProvider, 
+  TooltipTrigger 
+} from "@/components/ui/tooltip";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { apiRequest } from "@/lib/queryClient";
+import { websocketService } from "@/lib/websocketService";
+import { Trip, TripMember } from "@shared/schema";
+import TripItinerary from "@/components/trips/itinerary/TripItinerary";
+import ExpenseList from "@/components/trips/expenses/ExpenseList";
+import PackingList from "@/components/trips/packing/PackingList";
+import TripChat from "@/components/trips/chat/TripChat";
+import EditTripModal from "@/components/trips/EditTripModal";
+import TripDetailsDialog from "@/components/trips/TripDetailsDialog";
+import SpendingMarginDialog from "@/components/trips/SpendingMarginDialog";
+import RemoveMemberDialog from "@/components/trips/RemoveMemberDialog";
+import { ShareTripDialog } from "@/components/trips/ShareTripDialog";
+import { SelectAdminDialog } from "@/components/trips/SelectAdminDialog";
+import { ViewMembersDialog } from "@/components/trips/ViewMembersDialog";
+
+type TabType = "itinerary" | "expenses" | "packing" | "chat";
+
+const TripDetail = () => {
+  const [match, params] = useRoute<{ id: string }>("/trips/:id");
+  const [_, navigate] = useLocation();
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<TabType>("itinerary");
+  const { toast } = useToast();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showEditTripModal, setShowEditTripModal] = useState(false);
+  const [showTripDetailsDialog, setShowTripDetailsDialog] = useState(false);
+  const [showSpendingMarginDialog, setShowSpendingMarginDialog] = useState(false);
+  const [showRemoveMemberDialog, setShowRemoveMemberDialog] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showSelectAdminDialog, setShowSelectAdminDialog] = useState(false);
+  const [showViewMembersDialog, setShowViewMembersDialog] = useState(false);
+  const queryClient = useQueryClient();
+
+  if (!match || !params?.id) {
+    navigate("/");
+    return null;
+  }
+
+  const tripId = parseInt(params.id);
+
+  // Connect to WebSocket for real-time notifications
+  useEffect(() => {
+    if (!tripId || !user?.id) return;
+
+    // Register this component as using the WebSocket connection
+    websocketService.registerConnection();
+    
+    // Authenticate with the WebSocket server
+    websocketService.send('auth', { userId: user.id });
+    
+    // Join the trip's WebSocket room for notifications
+    websocketService.send('join_trip', { tripId });
+    
+    console.log(`Joined WebSocket notification channel for trip ${tripId}`);
+    
+    return () => {
+      // Clean up WebSocket connection when component unmounts
+      websocketService.deregisterConnection();
+    };
+  }, [tripId, user?.id]);
+
+  const { data: trip, isLoading, error } = useQuery<Trip>({
+    queryKey: [`/api/trips/${tripId}`],
+    enabled: !!tripId,
+  });
+
+  // Fetch trip members for remove member functionality
+  const { data: tripMembers } = useQuery<TripMember[]>({
+    queryKey: ['/api/trips', tripId, 'members'],
+    queryFn: async () => {
+      const res = await apiRequest('GET', `/api/trips/${tripId}/members`);
+      return res.json();
+    },
+    enabled: !!tripId && !!user
+  });
+
+  const deleteTripMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("DELETE", `/api/trips/${tripId}`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Trip Deleted",
+        description: "The trip has been successfully deleted.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      navigate("/");
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to delete trip. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const hideTripMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/trips/${tripId}/hide`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Trip Hidden",
+        description: "This trip has been hidden from your dashboard.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips/hidden"] });
+      navigate("/");
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to hide trip. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const leaveTripMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/trips/${tripId}/leave`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Left Trip",
+        description: "You have successfully left the trip.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      navigate("/");
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to leave trip. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const restoreTripMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/trips/${tripId}/restore`);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Trip Restored",
+        description: "Trip has been restored to active status.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/trips"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/trips/${tripId}`] });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to restore trip. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+  };
+
+  const handleShareTrip = () => {
+    setShowShareDialog(true);
+  };
+
+  const handleHideTrip = () => {
+    hideTripMutation.mutate();
+  };
+
+  const handleLeaveTrip = () => {
+    leaveTripMutation.mutate();
+  };
+
+  const handleRestoreTrip = () => {
+    restoreTripMutation.mutate();
+  };
+
+  // Check if current user is the trip owner
+  const isOwner = trip && user && trip.createdById === user.id;
+  
+  // Check if current user is an admin
+  const currentUserMembership = tripMembers?.find(member => member.userId === user?.id);
+  const isAdmin = currentUserMembership?.isAdmin || false;
+  
+  // User has admin permissions if they're owner or admin
+  const hasAdminPermissions = isOwner || isAdmin;
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-2 text-muted-foreground">Loading trip details...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !trip || !trip.name) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-lg font-semibold mb-2">Trip not found</h2>
+          <p className="text-muted-foreground mb-4">
+            The trip you're looking for doesn't exist or you don't have access to it.
+          </p>
+          <Button onClick={() => navigate("/")}>Go back to trips</Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col h-full">
+      {/* Unified Trip Header */}
+      <div className="bg-card shadow-sm border-b border-border px-4 py-3 flex-shrink-0">
+        {/* Mobile Layout */}
+        <div className="md:hidden">
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-lg font-bold truncate flex-1" style={{ color: 'var(--foreground)' }}>
+              {trip?.name || "Loading..."}
+              {trip?.isPast && hasAdminPermissions && (
+                <span className="ml-2 text-xs bg-secondary/10 text-secondary px-1.5 py-0.5 rounded-full">Past</span>
+              )}
+            </h1>
+            
+            <div className="flex items-center space-x-2">
+              {/* Share button */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      className="p-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      onClick={handleShareTrip}
+                    >
+                      <Share2 className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Share trip invite code</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              
+              {/* Mobile action dropdown menu */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="p-1.5 rounded-md bg-muted text-muted-foreground hover:bg-accent transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-primary"
+                    onClick={() => setShowTripDetailsDialog(true)}
+                  >
+                    <CalendarIcon className="h-4 w-4 mr-2" />
+                    <span>View Trip Details</span>
+                  </DropdownMenuItem>
+                  
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-secondary"
+                    onClick={() => setShowSpendingMarginDialog(true)}
+                  >
+                    <DollarSign className="h-4 w-4 mr-2" />
+                    <span>Set Budget</span>
+                  </DropdownMenuItem>
+
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400"
+                    onClick={() => setShowViewMembersDialog(true)}
+                  >
+                    <Users className="h-4 w-4 mr-2" />
+                    <span>View Members</span>
+                  </DropdownMenuItem>
+                  
+                  {trip?.isPast && hasAdminPermissions && (
+                    <DropdownMenuItem
+                      className="cursor-pointer flex items-center text-green-600 dark:text-green-400"
+                      onClick={handleRestoreTrip}
+                    >
+                      <CalendarIcon className="h-4 w-4 mr-2" />
+                      <span>Restore to Active</span>
+                    </DropdownMenuItem>
+                  )}
+                  
+                  {hasAdminPermissions ? (
+                    <>
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400"
+                        onClick={() => setShowEditTripModal(true)}
+                      >
+                        <Edit className="h-4 w-4 mr-2" />
+                        <span>Edit Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-orange-600 dark:text-orange-400"
+                        onClick={handleHideTrip}
+                      >
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        <span>Hide Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400"
+                        onClick={() => setShowRemoveMemberDialog(true)}
+                      >
+                        <UserMinus className="h-4 w-4 mr-2" />
+                        <span>Remove Member</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-purple-600 dark:text-purple-400"
+                        onClick={() => setShowSelectAdminDialog(true)}
+                      >
+                        <Shield className="h-4 w-4 mr-2" />
+                        <span>Select Admin</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-destructive"
+                        onClick={() => setShowDeleteDialog(true)}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        <span>Delete Trip</span>
+                      </DropdownMenuItem>
+                    </>
+                  ) : (
+                    <>
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-orange-600 dark:text-orange-400"
+                        onClick={handleHideTrip}
+                      >
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        <span>Hide Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-destructive"
+                        onClick={handleLeaveTrip}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        <span>Leave Trip</span>
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+          
+
+        </div>
+
+        {/* Desktop Layout */}
+        <div className="hidden md:block">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <h1 className="text-xl font-bold" style={{ color: 'var(--foreground)' }}>
+                {trip?.name || "Loading..."}
+                {trip?.isPast && hasAdminPermissions && (
+                  <span className="ml-2 text-sm bg-secondary/10 text-secondary px-2 py-1 rounded-full">Past</span>
+                )}
+              </h1>
+            </div>
+            
+            <div className="flex items-center space-x-2">
+              {/* Share button */}
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      className="p-2 rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      onClick={handleShareTrip}
+                    >
+                      <Share2 className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Share trip invite code</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              
+              {/* Desktop action dropdown menu */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="p-2 rounded-md bg-muted text-muted-foreground hover:bg-accent transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 min-w-fit">
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-primary"
+                    onClick={() => setShowTripDetailsDialog(true)}
+                  >
+                    <CalendarIcon className="h-4 w-4 mr-2" />
+                    <span>View Trip Details</span>
+                  </DropdownMenuItem>
+                  
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400 whitespace-nowrap"
+                    onClick={() => setShowViewMembersDialog(true)}
+                  >
+                    <Users className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span>View Members</span>
+                  </DropdownMenuItem>
+                  
+                  <DropdownMenuItem
+                    className="cursor-pointer flex items-center text-secondary whitespace-nowrap"
+                    onClick={() => setShowSpendingMarginDialog(true)}
+                  >
+                    <DollarSign className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span>Set Budget</span>
+                  </DropdownMenuItem>
+                  
+                  {trip?.isPast && hasAdminPermissions && (
+                    <DropdownMenuItem
+                      className="cursor-pointer flex items-center text-green-600 dark:text-green-400"
+                      onClick={handleRestoreTrip}
+                    >
+                      <CalendarIcon className="h-4 w-4 mr-2" />
+                      <span>Restore to Active</span>
+                    </DropdownMenuItem>
+                  )}
+                  
+                  {hasAdminPermissions ? (
+                    <>
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400"
+                        onClick={() => setShowEditTripModal(true)}
+                      >
+                        <Edit className="h-4 w-4 mr-2" />
+                        <span>Edit Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-orange-600 dark:text-orange-400"
+                        onClick={handleHideTrip}
+                      >
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        <span>Hide Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-blue-600 dark:text-blue-400"
+                        onClick={() => setShowRemoveMemberDialog(true)}
+                      >
+                        <UserMinus className="h-4 w-4 mr-2" />
+                        <span>Remove Member</span>
+                      </DropdownMenuItem>
+
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-purple-600 dark:text-purple-400"
+                        onClick={() => setShowSelectAdminDialog(true)}
+                      >
+                        <Shield className="h-4 w-4 mr-2" />
+                        <span>Select Admin</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-destructive"
+                        onClick={() => setShowDeleteDialog(true)}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        <span>Delete Trip</span>
+                      </DropdownMenuItem>
+                    </>
+                  ) : (
+                    <>
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-orange-600 dark:text-orange-400"
+                        onClick={handleHideTrip}
+                      >
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        <span>Hide Trip</span>
+                      </DropdownMenuItem>
+                      
+                      <DropdownMenuItem
+                        className="cursor-pointer flex items-center text-destructive"
+                        onClick={handleLeaveTrip}
+                      >
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        <span>Leave Trip</span>
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      {/* Mobile Navigation Tabs */}
+      <div className="md:hidden bg-card border-b border-border overflow-x-auto scrollbar-hide flex-shrink-0">
+        <div className="flex justify-between">
+          <button
+            className={`py-2 px-3 text-xs font-medium flex flex-col items-center relative flex-1 ${
+              activeTab === "itinerary"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("itinerary")}
+          >
+            <Calendar className="h-4 w-4 mb-1" />
+            <span>Itinerary</span>
+          </button>
+          
+          <button
+            className={`py-2 px-3 text-xs font-medium flex flex-col items-center relative flex-1 ${
+              activeTab === "expenses"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("expenses")}
+          >
+            <DollarSign className="h-4 w-4 mb-1" />
+            <span>Money</span>
+          </button>
+          
+          <button
+            className={`py-2 px-3 text-xs font-medium flex flex-col items-center relative flex-1 ${
+              activeTab === "packing"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("packing")}
+          >
+            <Briefcase className="h-4 w-4 mb-1" />
+            <span>Packing</span>
+          </button>
+          
+          <button
+            className={`py-2 px-3 text-xs font-medium flex flex-col items-center relative flex-1 ${
+              activeTab === "chat"
+                ? "text-primary border-b-2 border-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("chat")}
+          >
+            <MessageSquare className="h-4 w-4 mb-1" />
+            <span>Chat</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Desktop Navigation Tabs */}
+      <div className="hidden md:block border-b border-border flex-shrink-0">
+        <div className="flex space-x-6 px-4">
+          <button
+            className={`py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "itinerary"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("itinerary")}
+          >
+            <div className="flex items-center">
+              <Calendar className="h-4 w-4 mr-2" />
+              Itinerary
+            </div>
+          </button>
+          
+          <button
+            className={`py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "expenses"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("expenses")}
+          >
+            <div className="flex items-center">
+              <DollarSign className="h-4 w-4 mr-2" />
+              Expenses
+            </div>
+          </button>
+          
+          <button
+            className={`py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "packing"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("packing")}
+          >
+            <div className="flex items-center">
+              <Briefcase className="h-4 w-4 mr-2" />
+              Packing List
+            </div>
+          </button>
+          
+          <button
+            className={`py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "chat"
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => handleTabChange("chat")}
+          >
+            <div className="flex items-center">
+              <MessageSquare className="h-4 w-4 mr-2" />
+              Chat
+            </div>
+          </button>
+        </div>
+      </div>
+
+      {/* Trip Content Area */}
+      <div className="flex-1 overflow-y-auto h-full pb-20 min-h-0">
+        <div className="h-full overflow-y-auto">
+          {/* Itinerary Tab */}
+          {activeTab === "itinerary" && <TripItinerary tripId={tripId} hasAdminPermissions={hasAdminPermissions} />}
+  
+          {/* Expenses Tab */}
+          {activeTab === "expenses" && <ExpenseList tripId={tripId} currentUserId={user?.id || 0} />}
+  
+          {/* Packing List Tab */}
+          {activeTab === "packing" && <PackingList tripId={tripId} />}
+  
+          {/* Chat Tab */}
+          {activeTab === "chat" && <TripChat tripId={tripId} />}
+        </div>
+      </div>
+
+      {/* Delete Trip Dialog */}
+      {trip?.name && (
+        <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Trip</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete "{trip.name}"? This action cannot be undone and will remove all trip data including expenses, grocery lists, and chat messages.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction 
+                onClick={() => deleteTripMutation.mutate()}
+                disabled={deleteTripMutation.isPending}
+              >
+                {deleteTripMutation.isPending ? "Deleting..." : "Delete Trip"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+      
+      {/* Edit Trip Modal */}
+      {trip?.name && (
+        <EditTripModal 
+          isOpen={showEditTripModal}
+          onClose={() => setShowEditTripModal(false)}
+          trip={trip}
+        />
+      )}
+      
+      {/* Trip Details Dialog for Mobile */}
+      {trip?.name && (
+        <TripDetailsDialog
+          trip={trip}
+          open={showTripDetailsDialog}
+          onOpenChange={setShowTripDetailsDialog}
+        />
+      )}
+      
+      {/* Spending Margin Dialog */}
+      <SpendingMarginDialog
+        tripId={tripId}
+        isOpen={showSpendingMarginDialog}
+        onClose={() => setShowSpendingMarginDialog(false)}
+      />
+
+      {/* Remove Member Dialog */}
+      <RemoveMemberDialog
+        tripId={tripId}
+        tripMembers={tripMembers || []}
+        isOpen={showRemoveMemberDialog}
+        onClose={() => setShowRemoveMemberDialog(false)}
+        currentUserId={user?.id}
+      />
+
+      {/* Share Trip Dialog */}
+      {trip && (
+        <ShareTripDialog
+          trip={{
+            id: trip.id,
+            name: trip.name,
+            inviteCode: trip.inviteCode,
+            inviteCodeExpiresAt: trip.inviteCodeExpiresAt ? trip.inviteCodeExpiresAt.toString() : null
+          }}
+          isOpen={showShareDialog}
+          onClose={() => setShowShareDialog(false)}
+        />
+      )}
+
+      {/* Select Admin Dialog */}
+      {trip && user && (
+        <SelectAdminDialog
+          isOpen={showSelectAdminDialog}
+          onClose={() => setShowSelectAdminDialog(false)}
+          tripId={tripId}
+          currentUserId={user.id}
+          tripOwnerId={trip.createdById}
+        />
+      )}
+
+      {/* View Members Dialog */}
+      {trip && tripMembers && (
+        <ViewMembersDialog
+          open={showViewMembersDialog}
+          onOpenChange={setShowViewMembersDialog}
+          members={tripMembers}
+          tripOwnerId={trip.createdById}
+        />
+      )}
+    </div>
+  );
+};
+
+export default TripDetail;
